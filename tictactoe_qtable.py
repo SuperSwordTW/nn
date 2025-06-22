@@ -79,13 +79,6 @@ class TicTacToeEnv(gym.Env):
             return True
         return False
 
-class RandomAgent:
-    def __init__(self):
-        pass
-    def select(self, observation):
-        available_actions = [i for i in range(9) if observation.flatten()[i] == 0]
-        return random.choice(available_actions)
-
 class MinimaxAgent:
     def __init__(self): self.cache = {}
     def select(self, b): _, a = self._minimax(b, 2, 2); return a
@@ -113,7 +106,7 @@ class MinimaxAgent:
 
 class QAgent:
     def __init__(self, env, lr=0.1, gamma=0.9,
-                 eps=1.0, eps_decay=0.99999, eps_min=0.01):
+                 eps=1.0, eps_decay=0.999, eps_min=0.01):
         self.env = env
         self.q = np.zeros((3**9, env.action_space.n))
         self.lr, self.gamma = lr, gamma
@@ -160,8 +153,8 @@ def eval(env, agent, episodes=100):
 
 if __name__=='__main__':
     env = TicTacToeEnv()
-    agent = QAgent()
-    opponent = RandomAgent()
+    agent = QAgent(env)
+    opponent = MinimaxAgent()
 
     episodes = 10000
     recent_outcomes = deque(maxlen=10)
@@ -187,28 +180,23 @@ if __name__=='__main__':
                 next_state = s1
 
 
-            agent.store(state, a, reward, next_state, done)
-            agent.learn()
-            agent.on_step()
+            agent.learn(state, a, reward, next_state, done)
 
             state = next_state
             ep_reward += reward
 
 
-        agent.decay_eps()
+        agent.decay()
         recent_outcomes.append(1 if ep_reward>0 else 0)
 
 
-        if ep % 10 == 0:
+        if ep % 100 == 0:
             win_rate = sum(recent_outcomes)/len(recent_outcomes)
             print(f"Episode {ep}, Epsilon {agent.eps:.3f}, AvgReward {ep_reward:.2f}, WinRate(last10) {win_rate:.2f}")
 
     print("Training complete.")
 
-
-    # q.model = keras.models.load_model("tictactoe_model.h5")
     agent.eps = 0
-
 
     state = env.reset(); done=False
     while not done:
@@ -225,6 +213,4 @@ if __name__=='__main__':
     elif r==-1: print("Invalid move!")
     else: print("Draw!")
 
-
-    agent.model.save("tictactoe_model.h5")
     print("Win/Lose/Draw",eval(env, agent, 100))
