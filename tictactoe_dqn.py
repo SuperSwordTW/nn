@@ -103,7 +103,7 @@ class MinimaxAgent:
 
 class QAgent:
     def __init__(self, env, lr=0.1, gamma=0.9,
-                 eps=1.0, eps_decay=0.999, eps_min=0.01):
+                 eps=1.0, eps_decay=0.99999, eps_min=0.01):
         self.env = env
         self.q = np.zeros((3**9, env.action_space.n))
         self.lr, self.gamma = lr, gamma
@@ -125,6 +125,88 @@ class QAgent:
     def decay(self):
         self.eps = max(self.eps_min, self.eps * self.eps_decay)
 
+
+
+class DQNAgent:
+    def __init__(self, env, lr=0.001, gamma=0.99,
+                 eps=1.0, eps_decay=0.995, eps_min=0.01,
+                 buffer_size=5000, batch_size=64,
+                 target_update_freq=100):
+        self.env = env
+        self.lr = lr
+        self.gamma = gamma
+        self.eps = eps
+        self.eps_decay = eps_decay
+        self.eps_min = eps_min
+        self.batch_size = batch_size
+        self.target_update_freq = target_update_freq
+
+        self.replay_buffer = deque(maxlen=buffer_size)
+
+        self.model = self._build_model()
+        self.target_model = self._build_model()
+        self.update_target_network(hard=True)
+        self.train_step = 0
+
+    def _build_model(self):
+        model = keras.Sequential([
+            keras.layers.Input(shape=(9,)),
+            keras.layers.Dense(64, activation='relu'),
+            keras.layers.Dense(64, activation='relu'),
+            keras.layers.Dense(self.env.action_space.n)
+        ])
+        model.compile(optimizer=keras.optimizers.Adam(self.lr), loss='mse')
+        return model
+
+    def update_target_network(self, hard=False):
+        if hard:
+            self.target_model.set_weights(self.model.get_weights())
+        else:
+            weights = self.model.get_weights()
+            target_weights = self.target_model.get_weights()
+            for i in range(len(weights)):
+                target_weights[i] = 0.1 * weights[i] + 0.9 * target_weights[i]
+            self.target_model.set_weights(target_weights)
+
+    def select(self, state):
+        avail = [i for i, v in enumerate(state.flatten()) if v == 0]
+        if np.random.rand() < self.eps:
+            return random.choice(avail)
+        inp = state.flatten() / 2.0
+        q_vals = self.model.predict(inp.reshape(1,-1), verbose=0)[0]
+        return max(avail, key=lambda a: q_vals[a])
+
+    def store(self, state, action, reward, next_state, done):
+        self.replay_buffer.append((state, action, reward, next_state, done))
+
+    def learn(self):
+        if len(self.replay_buffer) < self.batch_size: return
+        batch = random.sample(self.replay_buffer, self.batch_size)
+        states = np.array([s.flatten()/2 for s,a,r,ns,d in batch])
+        next_states = np.array([ns.flatten()/2 for s,a,r,ns,d in batch])
+        actions = np.array([a for s,a,r,ns,d in batch])
+        rewards = np.array([r for s,a,r,ns,d in batch])
+        dones = np.array([d for s,a,r,ns,d in batch])
+
+        q_current = self.model.predict(states, verbose=0)
+        q_next = self.target_model.predict(next_states, verbose=0)
+        for i in range(self.batch_size):
+            q_current[i][actions[i]] = rewards[i] + (0 if dones[i] else self.gamma * np.max(q_next[i]))
+
+
+        history = self.model.fit(states, q_current, epochs=1, verbose=0)
+        loss = history.history['loss'][0]
+        return loss
+        
+
+    def decay_eps(self):
+        self.eps = max(self.eps_min, self.eps * self.eps_decay)
+
+    def on_step(self):
+        self.train_step += 1
+        if self.train_step % self.target_update_freq == 0:
+            self.update_target_network()
+
 def eval(env, agent, episodes=100):
     wins = 0
     losses = 0
@@ -138,7 +220,7 @@ def eval(env, agent, episodes=100):
             if reward == 1:
                 wins += 1
                 break
-            if not done:
+            if not done: 
                 action2 = opponent.select(state)
                 s2, r2, done, _ = env.step(action2)
                 if r2 == 1:
@@ -150,11 +232,12 @@ def eval(env, agent, episodes=100):
 
 if __name__=='__main__':
     env = TicTacToeEnv()
-    agent = QAgent(env)
+    agent = DQNAgent(env)
     opponent = MinimaxAgent()
 
-    episodes = 10000
+    episodes = 2000
     recent_outcomes = deque(maxlen=10)
+    losses = []
 
     for ep in range(1, episodes+1):
         state = env.reset()
@@ -169,25 +252,25 @@ if __name__=='__main__':
             if not done:
                 a2 = opponent.select(s1)
                 s2, r2, done, _ = env.step(a2)
-
                 reward = r1 + (-1 if r2==1 else 0)
                 next_state = s2
             else:
                 reward = r1
                 next_state = s1
 
-
-            agent.learn(state, a, reward, next_state, done)
+            agent.store(state, a, reward, next_state, done)
+            losses.append(agent.learn())
+            agent.on_step()
 
             state = next_state
             ep_reward += reward
 
 
-        agent.decay()
+        agent.decay_eps()
         recent_outcomes.append(1 if ep_reward>0 else 0)
 
 
-        if ep % 100 == 0:
+        if ep % 10 == 0:
             win_rate = sum(recent_outcomes)/len(recent_outcomes)
             print(f"Episode {ep}, Epsilon {agent.eps:.3f}, AvgReward {ep_reward:.2f}, WinRate(last10) {win_rate:.2f}")
 
@@ -210,4 +293,11 @@ if __name__=='__main__':
     elif r==-1: print("Invalid move!")
     else: print("Draw!")
 
+    plt.plot(losses)
+    plt.title("Losses over training steps")
+    plt.xlabel("Training Steps")
+    plt.ylabel("Loss")
+    plt.show()
+
+    agent.model.save("tictactoe_model.h5")
     print("Win/Lose/Draw",eval(env, agent, 100))
